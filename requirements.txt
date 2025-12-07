@@ -1,0 +1,5 @@
+requests
+beautifulsoup4
+paho-mqtt
+PyYAML
+flask
