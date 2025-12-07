@@ -2,7 +2,7 @@ name: ILEO Scraper
 
 on:
   schedule:
-    - cron: '0 */4 * * *'  # toutes les 4 heures
+    - cron: '0 */4 * * *'
   workflow_dispatch:
 
 jobs:
@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout repo
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.x'
@@ -25,4 +25,8 @@ jobs:
         env:
           ILEO_USER: ${{ secrets.ILEO_USER }}
           ILEO_PASS: ${{ secrets.ILEO_PASS }}
+          MQTT_HOST: ${{ secrets.MQTT_HOST }}
+          MQTT_PORT: ${{ secrets.MQTT_PORT }}
+          MQTT_USER: ${{ secrets.MQTT_USER }}
+          MQTT_PASS: ${{ secrets.MQTT_PASS }}
         run: python run.py
