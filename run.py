@@ -1,96 +1,94 @@
-import os
-import time
 import requests
 from bs4 import BeautifulSoup
+import os
+import time
+import json
 import paho.mqtt.publish as publish
 
-ILEO_USER = os.getenv('ILEO_USER')
-ILEO_PASS = os.getenv('ILEO_PASS')
-PUBLISH_METHOD = os.getenv('PUBLISH_METHOD', 'mqtt')
-MQTT_HOST = os.getenv('MQTT_HOST')
-MQTT_PORT = int(os.getenv('MQTT_PORT', '1883'))
-MQTT_USER = os.getenv('MQTT_USER')
-MQTT_PASS = os.getenv('MQTT_PASS')
-HA_URL = os.getenv('HA_URL')
-HA_TOKEN = os.getenv('HA_TOKEN')
+BASE_URL = "https://www.mel-ileo.fr"
+LOGIN_URL = f"{BASE_URL}/connexion.aspx"
+CONSUMPTION_URL = f"{BASE_URL}/espaceperso/mes-consommations.aspx"
 
-SESSION = requests.Session()
+def ileo_login(session, username, password):
+    resp = session.get(LOGIN_URL)
+    soup = BeautifulSoup(resp.text, "html.parser")
 
-def login():
-    login_url = 'https://www.mel-ileo.fr/connexion.aspx'
-    r = SESSION.get(login_url, timeout=30)
-    soup = BeautifulSoup(r.text, 'html.parser')
-    # Ici il faudra peut-être récupérer des tokens __VIEWSTATE etc. si présents dans le formulaire
+    viewstate = soup.find(id="__VIEWSTATE")['value']
+    eventvalidation = soup.find(id="__EVENTVALIDATION")['value']
+    viewstategenerator = soup.find(id="__VIEWSTATEGENERATOR")['value']
+
     payload = {
-        'Identifiant': ILEO_USER,
-        'Motdepasse': ILEO_PASS
+        '__VIEWSTATE': viewstate,
+        '__EVENTVALIDATION': eventvalidation,
+        '__VIEWSTATEGENERATOR': viewstategenerator,
+        'ctl00$ContentPlaceHolder1$Identifiant': username,
+        'ctl00$ContentPlaceHolder1$MotDePasse': password,
+        'ctl00$ContentPlaceHolder1$btnConnexion': 'Connexion'
     }
-    try:
-        resp = SESSION.post(login_url, data=payload, timeout=30)
-        resp.raise_for_status()
-        # Vérifier succès login, par ex. présence d'un élément spécifique ou URL de redirection
-        if "mes-consommations" not in resp.text:
-            print("Login may have failed, check credentials or form fields")
-            return False
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0',
+        'Referer': LOGIN_URL
+    }
+
+    login_resp = session.post(LOGIN_URL, data=payload, headers=headers)
+
+    if "Mes consommations" in login_resp.text:
+        print("Login réussi")
         return True
-    except Exception as e:
-        print('Login failed:', e)
+    else:
+        print("Login échoué")
+        print("Page après login :", login_resp.text[:500])
         return False
 
-def fetch_consumption():
-    url = 'https://www.mel-ileo.fr/espaceperso/mes-consommations.aspx'
-    r = SESSION.get(url, timeout=30)
-    r.raise_for_status()
-    soup = BeautifulSoup(r.text, 'html.parser')
+def get_water_consumption(session):
+    resp = session.get(CONSUMPTION_URL)
+    soup = BeautifulSoup(resp.text, "html.parser")
 
-    # Exemple : cherche un élément CSS avec classe 'current-consumption'
-    el = soup.select_one('.current-consumption')
-    if el:
-        return el.get_text(strip=True)
-
-    # Sinon essaie d'extraire un JSON embedded ou autre selon la page
-    return None
-
-def publish_mqtt(value):
-    if not MQTT_HOST or not value:
-        print("MQTT publish skipped (missing host or value)")
-        return
-    auth = None
-    if MQTT_USER:
-        auth = {'username': MQTT_USER, 'password': MQTT_PASS}
-    publish.single('homeassistant/sensor/ileo_conso/state', payload=str(value), hostname=MQTT_HOST, port=MQTT_PORT, auth=auth)
-    print('Published MQTT:', value)
-
-def publish_rest(value):
-    if not HA_URL or not HA_TOKEN or not value:
-        print("REST publish skipped (missing URL, token or value)")
-        return
-    url = f"{HA_URL.rstrip('/')}/api/states/sensor.ileo_conso"
-    headers = {'Authorization': f'Bearer {HA_TOKEN}', 'Content-Type': 'application/json'}
-    payload = {
-        'state': str(value),
-        'attributes': {
-            'friendly_name': 'ILEO consommation',
-            'unit_of_measurement': 'L',
-        }
-    }
-    resp = requests.post(url, json=payload, headers=headers, timeout=20)
-    print('REST publish:', resp.status_code, resp.text)
-
-if __name__ == '__main__':
-    ok = login()
-    if not ok:
-        print('Login failed — abort')
-        raise SystemExit(1)
-
-    val = fetch_consumption()
-    if not val:
-        print('No consumption value found — abort')
-        raise SystemExit(1)
-
-    if PUBLISH_METHOD == 'mqtt':
-        publish_mqtt(val)
+    # Exemple d'extraction, à adapter selon la page
+    # Cherche un élément avec la conso d'eau
+    conso_tag = soup.find("span", {"id": "ctl00_ContentPlaceHolder1_lblConsommation"})
+    if conso_tag:
+        return conso_tag.text.strip()
     else:
-        publish_rest(val)
+        print("Impossible de trouver la consommation sur la page")
+        return None
 
-    print('Run complete')
+def publish_mqtt(consommation, mqtt_host, mqtt_port, mqtt_user, mqtt_pass):
+    topic = "ileo/eau/consommation"
+    payload = json.dumps({"consommation": consommation})
+
+    auth = None
+    if mqtt_user and mqtt_pass:
+        auth = {'username': mqtt_user, 'password': mqtt_pass}
+
+    publish.single(topic, payload, hostname=mqtt_host, port=mqtt_port, auth=auth)
+    print(f"Publié sur MQTT: {payload}")
+
+def main():
+    username = os.getenv("ILEO_USER")
+    password = os.getenv("ILEO_PASS")
+
+    mqtt_host = os.getenv("MQTT_HOST")
+    mqtt_port = int(os.getenv("MQTT_PORT", "1883"))
+    mqtt_user = os.getenv("MQTT_USER")
+    mqtt_pass = os.getenv("MQTT_PASS")
+
+    if not username or not password:
+        print("Erreur: identifiants ILEO non définis")
+        return
+
+    session = requests.Session()
+    if not ileo_login(session, username, password):
+        return
+
+    consommation = get_water_consumption(session)
+    if consommation:
+        print("Consommation d'eau:", consommation)
+        if mqtt_host:
+            publish_mqtt(consommation, mqtt_host, mqtt_port, mqtt_user, mqtt_pass)
+        else:
+            print("Pas de MQTT configuré, affichage local uniquement")
+
+if __name__ == "__main__":
+    main()
